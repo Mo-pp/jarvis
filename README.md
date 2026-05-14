@@ -1,5 +1,17 @@
 # JARVIS
 
+## 示例截图
+
+以下截图展示了 JARVIS 的对话工作台、执行轨迹和结果预览效果。
+
+![JARVIS 示例截图 1](demo/demo0.png)
+
+![JARVIS 示例截图 2](demo/demo1.png)
+
+![JARVIS 示例截图 3](demo/demo2.png)
+
+![JARVIS 示例截图 4](demo/demo3.png)
+
 > 面向通用任务的 AI 助手与智能工作台。JARVIS 支持多轮 Agent 对话、工具调用、实时执行轨迹、知识库检索、工作空间浏览、Skill 扩展、上下文压缩、子 Agent 派发，以及通过文件、文本或 GitHub/URL 导入资料供 LLM 分析。
 
 ## 📝 项目简介
