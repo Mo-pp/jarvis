@@ -24,15 +24,17 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * 子Agent派发策略
+ * 子 Agent 派发策略。
  *
- * <p>负责处理 spawnAgent 工具调用，包括：
- * <ul>
- *   <li>解析 spawnAgent 参数（prompt, subagentType, allowedTools, maxTurns）</li>
- *   <li>并行执行多个 spawnAgent 请求</li>
- *   <li>同时执行非 spawnAgent 的普通工具请求</li>
- *   <li>格式化子Agent执行结果并聚合 token 用量</li>
- * </ul>
+ * 作用：专门处理 spawnAgent 工具调用，把子任务分发到子图执行，
+ * 同时继续兼容同批次里混进来的普通工具，并把派发过程完整记进 trace。
+ * 可以把它理解成“外包调度员”，主 Agent 把子任务分出去，它负责盯执行、收结果、回主链。
+ *
+ * 代码逻辑：
+ * 1. 先把同一批请求拆成 spawnAgent 请求和普通工具请求
+ * 2. 普通工具仍复用 NormalToolStrategy 走原有链路
+ * 3. spawnAgent 请求解析参数后并行执行子图，并为每个子 Agent 建独立 trace 节点
+ * 4. 等全部子任务收齐后，汇总结果、trace 状态和 token 用量返回给主流程
  */
 @Slf4j
 @Component
@@ -46,6 +48,7 @@ public class SpawnAgentStrategy implements ToolExecutionStrategy {
     private final DelegationActionEventService delegationActionEventService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    /** 注入普通工具策略、子图执行器和子 Agent 相关 trace 事件服务。 */
     public SpawnAgentStrategy(NormalToolStrategy normalToolStrategy,
                               SubGraphNode subGraphNode,
                               TraceService traceService,
@@ -57,17 +60,20 @@ public class SpawnAgentStrategy implements ToolExecutionStrategy {
     }
 
     @Override
+    /** 只接管 spawnAgent 工具调用。 */
     public boolean supports(ToolExecutionRequest request) {
         return TOOL_NAME.equals(request.name());
     }
 
     @Override
+    /** 给予较高优先级，保证 spawnAgent 不会被普通工具策略抢走。 */
     public int getPriority() {
         // 高优先级，优先于普通工具策略
         return 10;
     }
 
     @Override
+    /** 协调同一批次里的子 Agent 派发和普通工具执行，并汇总成统一结果。 */
     public ToolExecutionResult execute(ToolExecutionContext context) {
         QueryLoopState state = context.state();
         List<ToolExecutionRequest> requests = context.requests();
@@ -302,9 +308,7 @@ public class SpawnAgentStrategy implements ToolExecutionStrategy {
         }
     }
 
-    /**
-     * 执行单个子Agent任务
-     */
+    /** 启动单个子 Agent 子图，并把最终结果包装回工具返回消息。 */
     private CompletableFuture<SpawnAgentExecutionResult> executeSpawnAgent(
             ToolExecutionRequest request, SpawnAgentParams params,
             String sessionId,
@@ -335,9 +339,7 @@ public class SpawnAgentStrategy implements ToolExecutionStrategy {
         });
     }
 
-    /**
-     * 格式化子Agent执行结果为可读文本
-     */
+    /** 把子 Agent 的结构化结果格式化成主 Agent 能直接阅读的文本摘要。 */
     private String formatSubAgentResult(String prompt, SubAgentResult result) {
         StringBuilder sb = new StringBuilder();
         sb.append("[子Agent执行完成]\n");

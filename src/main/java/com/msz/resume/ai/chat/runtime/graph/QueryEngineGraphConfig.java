@@ -26,9 +26,17 @@ import static org.bsc.langgraph4j.StateGraph.END;
 import static org.bsc.langgraph4j.StateGraph.START;
 
 /**
- * 外层会话管理的图配置
- * 单轮用户请求对应一次完整的线性流转：session_init → run_inner_loop → usage_stat → END
- * 多轮对话由 Controller 层通过 sessionId 缓存实现，不在图内循环
+ * 外层会话图配置。
+ *
+ * 作用：定义一次用户请求在外层 SessionState 里的完整流转方式，
+ * 同时负责把内层 QueryLoopState 跑起来，并把 trace 相关字段原样透传进去。
+ * 可以把它理解成“总流程骨架”，外层管会话生命周期，内层管真正的思考和工具循环。
+ *
+ * 代码逻辑：
+ * 1. 定义 session_init → run_inner_loop → usage_stat → END 的单轮链路
+ * 2. 在 run_inner_loop 节点里把外层状态拆成内层输入
+ * 3. 把 traceRunId / traceAgentId / traceAgentLabel / traceAgentScope 一起传入内层图
+ * 4. 等内层图跑完后，把最终 innerState 再塞回 SessionState
  */
 @Slf4j
 @Configuration
@@ -37,6 +45,7 @@ public class QueryEngineGraphConfig {
     private static final int INNER_LOOP_RECURSION_LIMIT = 100;
 
     @Bean
+    /** 编译外层会话图，并把内层 Query Loop 挂进其中一个节点里执行。 */
     public CompiledGraph<SessionState> queryEngineGraph(
             SessionInitNode sessionInitNode,
             UsageStatNode usageStatNode,

@@ -13,7 +13,17 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Publishes user-visible tool action events for the chat timeline.
+ * 工具动作事件服务。
+ *
+ * 作用：把底层工具调用过程翻译成用户可见的时间线动作，
+ * 包括开始、进度、成功、失败、阻断，以及工具参数预览、资源范围、分组信息等。
+ * 它相当于 Trace 和用户之间的“同传翻译”，把技术执行细节压成可读卡片。
+ *
+ * 代码逻辑：
+ * 1. 对外暴露 started/progress/succeeded/failed/blocked 五类事件入口
+ * 2. 统一为每个工具生成标题、描述、预览和分组信息
+ * 3. 对工具结果做摘要归纳，避免把原始大段文本直接砸给时间线
+ * 4. 只保留安全预览字段，避免敏感参数泄露到前端
  */
 @Slf4j
 @Service
@@ -47,12 +57,14 @@ public class ToolActionEventService {
     private final ObjectMapper objectMapper;
     private final TimelineActionService timelineActionService;
 
+    /** 注入 JSON 解析器和时间线服务，负责把原始工具调用翻成可见动作卡片。 */
     public ToolActionEventService(ObjectMapper objectMapper,
                                   TimelineActionService timelineActionService) {
         this.objectMapper = objectMapper;
         this.timelineActionService = timelineActionService;
     }
 
+    /** 发布工具开始事件，告诉用户这把工具已经真正开始跑了。 */
     public void toolStarted(ChatRunTraceContext traceContext,
                             TraceAgentDescriptor agentDescriptor,
                             ToolExecutionRequest request) {
@@ -62,6 +74,7 @@ public class ToolActionEventService {
         publish(traceContext, "tool_use_started", buildPayload(traceContext, agentDescriptor, request, "running", null, null));
     }
 
+    /** 发布工具过程摘要，适合展示“正在读目录”“正在检索知识”这类过程提示。 */
     public void toolProgress(ChatRunTraceContext traceContext,
                              TraceAgentDescriptor agentDescriptor,
                              ToolExecutionRequest request,
@@ -79,6 +92,7 @@ public class ToolActionEventService {
         ));
     }
 
+    /** 发布工具成功事件，并对原始结果做一层面向用户的摘要压缩。 */
     public void toolSucceeded(ChatRunTraceContext traceContext,
                               TraceAgentDescriptor agentDescriptor,
                               ToolExecutionRequest request,
@@ -89,6 +103,7 @@ public class ToolActionEventService {
         publish(traceContext, "tool_use_result", buildPayload(traceContext, agentDescriptor, request, "success", summarizeResult(request.name(), result), null));
     }
 
+    /** 发布工具失败事件，把错误裁成适合前端展示的一句摘要。 */
     public void toolFailed(ChatRunTraceContext traceContext,
                            TraceAgentDescriptor agentDescriptor,
                            ToolExecutionRequest request,
@@ -99,6 +114,7 @@ public class ToolActionEventService {
         publish(traceContext, "tool_use_error", buildPayload(traceContext, agentDescriptor, request, "failed", null, summarizeError(error)));
     }
 
+    /** 发布工具被安全规则阻断的事件，让用户知道不是卡住，而是被拦下来了。 */
     public void toolBlocked(ChatRunTraceContext traceContext,
                             TraceAgentDescriptor agentDescriptor,
                             ToolExecutionRequest request,
@@ -110,6 +126,7 @@ public class ToolActionEventService {
         publish(traceContext, "tool_use_error", buildPayload(traceContext, agentDescriptor, request, "blocked", summary, summary));
     }
 
+    /** 测试专用入口：构造预览 payload，不依赖真实 SSE 上下文。 */
     Map<String, Object> previewPayloadForTest(ToolExecutionRequest request, String status, String summary, String error) {
         return buildPayload(
                 new ChatRunTraceContext("test-run", "test-session", TracePublisher.noop()),
@@ -121,12 +138,14 @@ public class ToolActionEventService {
         );
     }
 
+    /** 判断当前工具事件是否值得向用户发布。 */
     private boolean shouldPublish(ChatRunTraceContext traceContext, ToolExecutionRequest request) {
         return traceContext != null
                 && traceContext.isActive()
                 && request != null;
     }
 
+    /** 拼装工具动作 payload，把标题、摘要、分组、资源范围这些用户视角字段一次性补全。 */
     private Map<String, Object> buildPayload(ChatRunTraceContext traceContext,
                                              TraceAgentDescriptor agentDescriptor,
                                              ToolExecutionRequest request,
@@ -152,10 +171,12 @@ public class ToolActionEventService {
                 .build();
     }
 
+    /** 发布工具时间线事件，统一委托给 TimelineActionService。 */
     private void publish(ChatRunTraceContext traceContext, String type, Map<String, Object> payload) {
         timelineActionService.publish(traceContext, type, payload, "ToolActionEventService");
     }
 
+    /** 生成工具动作 ID，让同一工具调用的多次状态变化能合并到一张卡片上。 */
     private String actionId(ToolExecutionRequest request) {
         String toolCallId = request.id();
         if (toolCallId != null && !toolCallId.isBlank()) {
@@ -164,6 +185,7 @@ public class ToolActionEventService {
         return "tool_action_" + request.name() + "_" + Integer.toHexString(System.identityHashCode(request));
     }
 
+    /** 把工具名翻译成前端可展示的中文标题。 */
     private String titleFor(String toolName) {
         return switch (toolName) {
             case "openviking_list" -> "列出目录";
@@ -197,6 +219,7 @@ public class ToolActionEventService {
         };
     }
 
+    /** 生成工具分组 ID，把同一轮里相近的工具动作收拢成一组。 */
     private String groupId(ChatRunTraceContext traceContext,
                            TraceAgentDescriptor agentDescriptor,
                            ToolExecutionRequest request,
@@ -207,6 +230,7 @@ public class ToolActionEventService {
         return "tool_group_" + traceContext.runId() + "_" + agentId + "_" + groupKind(request.name()) + "_" + scopeKey(request.name(), preview);
     }
 
+    /** 根据工具类型归类分组种类，方便前端折叠“浏览”“检索”“读文件”等大类。 */
     private String groupKind(String toolName) {
         return switch (toolName) {
             case "openviking_read" -> "openviking_read";
@@ -224,6 +248,7 @@ public class ToolActionEventService {
         };
     }
 
+    /** 给分组生成用户可读标题，相当于折叠面板的大标题。 */
     private String groupTitle(String toolName) {
         return switch (groupKind(toolName)) {
             case "openviking_read" -> "读取关键资源";
@@ -240,6 +265,7 @@ public class ToolActionEventService {
         };
     }
 
+    /** 根据当前状态生成分组摘要，让前端知道这组动作是在进行中还是已经完成。 */
     private String groupSummary(String toolName, String status) {
         if ("running".equals(status)) {
             return switch (groupKind(toolName)) {
@@ -277,6 +303,7 @@ public class ToolActionEventService {
         };
     }
 
+    /** 生成作用域键，把“同一片资源范围里的工具动作”稳定聚在一起。 */
     private String scopeKey(String toolName, Map<String, Object> preview) {
         String source = switch (toolName) {
             case "openviking_read", "openviking_list", "openviking_tree", "openviking_grep", "openviking_glob" ->
@@ -297,6 +324,7 @@ public class ToolActionEventService {
         return Integer.toHexString(source.hashCode());
     }
 
+    /** 给工具动作生成一句人话描述，说明这把工具这次到底在干嘛。 */
     private String descriptionFor(ToolExecutionRequest request) {
         Map<String, Object> preview = safePreview(request.arguments());
         String toolName = request.name();
@@ -331,6 +359,7 @@ public class ToolActionEventService {
         };
     }
 
+    /** 提取工具涉及到的资源 URI，方便前端做资源跳转或范围提示。 */
     private List<String> resourceUrisFor(String toolName, Map<String, Object> preview) {
         if (!OPEN_VIKING_TOOLS.contains(toolName)) {
             return List.of();
@@ -352,6 +381,7 @@ public class ToolActionEventService {
         return uris;
     }
 
+    /** 如果值存在且未重复，就把它加入 URI 列表。 */
     private void addIfPresent(List<String> values, String value) {
         String normalized = value != null ? value.trim() : "";
         if (normalized.isBlank() || values.contains(normalized)) {
@@ -360,11 +390,13 @@ public class ToolActionEventService {
         values.add(normalized);
     }
 
+    /** 计算 Skill 相关动作的作用域。 */
     private String skillScope(Map<String, Object> preview) {
         String uri = skillUri(preview, stringValue(preview.get("path")));
         return uri.isBlank() ? "skill" : uri;
     }
 
+    /** 根据 Skill 名和文件路径拼出稳定的资源 URI。 */
     private String skillUri(Map<String, Object> preview, String path) {
         String name = stringValue(preview.get("name")).trim();
         if (name.isBlank()) {
@@ -378,25 +410,30 @@ public class ToolActionEventService {
         return baseUri + "/" + trimLeadingSlashes(normalizedPath);
     }
 
+    /** 去掉首尾多余斜杠，让 Skill URI 更稳定。 */
     private String trimSlashes(String value) {
         return trimLeadingSlashes(value).replaceAll("/+$", "");
     }
 
+    /** 只去掉前导斜杠，避免拼 URI 时出现双斜杠。 */
     private String trimLeadingSlashes(String value) {
         return value != null ? value.replaceAll("^/+", "") : "";
     }
 
+    /** 生成 Skill 文件读取动作的描述。 */
     private String describeSkillFile(Map<String, Object> preview) {
         String name = fallback(stringValue(preview.get("name")), "(未指定)");
         String path = fallback(stringValue(preview.get("path")), "文件");
         return "读取 Skill 文件：" + name + " · " + path;
     }
 
+    /** 生成人话范围说明，适合 list/tree/forget 这种以 URI 为中心的工具。 */
     private String describeScope(Object uri, String fallback) {
         String target = stringValue(uri);
         return "目标：" + (target.isBlank() ? fallback : target);
     }
 
+    /** 生成读取动作描述，并补出层级信息。 */
     private String describeRead(Map<String, Object> preview) {
         String uri = stringValue(preview.get("uri"));
         String level = stringValue(preview.get("level"));
@@ -406,6 +443,7 @@ public class ToolActionEventService {
         return "目标：" + (uri.isBlank() ? "viking://" : uri);
     }
 
+    /** 生成按路径或内容匹配时的说明，像告诉用户“我在什么范围里搜什么”。 */
     private String describePattern(Map<String, Object> preview, String key, String verb) {
         String pattern = stringValue(preview.get(key));
         String uri = stringValue(preview.get("uri"));
@@ -413,6 +451,7 @@ public class ToolActionEventService {
         return verb + "：" + (pattern.isBlank() ? "(空)" : pattern) + " · " + scope;
     }
 
+    /** 生成检索型工具的描述。 */
     private String describeQuery(Map<String, Object> preview) {
         String query = stringValue(preview.get("query"));
         String targetUri = stringValue(preview.get("targetUri"));
@@ -422,6 +461,7 @@ public class ToolActionEventService {
         return "查询：" + (query.isBlank() ? "(空)" : query);
     }
 
+    /** 从原始 arguments 中提取安全可展示字段，避免敏感信息跑到前端。 */
     private Map<String, Object> safePreview(String arguments) {
         Map<String, Object> preview = new LinkedHashMap<>();
         if (arguments == null || arguments.isBlank()) {
@@ -444,6 +484,7 @@ public class ToolActionEventService {
         return preview;
     }
 
+    /** 判断某个参数键是不是允许暴露到预览里。 */
     private boolean isSafePreviewKey(String key) {
         String lowerKey = key != null ? key.toLowerCase() : "";
         if (lowerKey.contains("password")
@@ -457,6 +498,7 @@ public class ToolActionEventService {
         return SAFE_PREVIEW_KEYS.contains(key);
     }
 
+    /** 对工具原始结果做摘要，把大段文本压缩成一句结果说明。 */
     private String summarizeResult(String toolName, String result) {
         if (result == null || result.isBlank()) {
             return "工具执行完成，未返回可展示摘要";
@@ -507,6 +549,7 @@ public class ToolActionEventService {
         };
     }
 
+    /** 对错误文本做摘要压缩，避免时间线卡片被异常堆栈刷满。 */
     private String summarizeError(String error) {
         if (error == null || error.isBlank()) {
             return "工具执行失败";
@@ -514,11 +557,13 @@ public class ToolActionEventService {
         return truncate(error.replace('\n', ' ').trim(), MAX_SUMMARY_CHARS);
     }
 
+    /** 给被安全规则阻断的动作生成统一错误说明。 */
     private String summarizeBlocked(String reason) {
         String summary = summarizeError(reason);
         return summary.isBlank() ? "操作已被安全规则阻止" : "操作已被安全规则阻止：" + summary;
     }
 
+    /** 汇总 toolSearch 结果，告诉用户是命中了工具说明还是若干候选项。 */
     private String summarizeToolSearch(String result) {
         if (result.contains("\"name\"")) {
             return "已加载匹配工具的完整说明";
@@ -527,6 +572,7 @@ public class ToolActionEventService {
         return count != null && count > 0 ? "找到 " + count + " 个候选工具" : "工具查询完成";
     }
 
+    /** 汇总任务计划工具结果，重点告诉用户任务数有没有变化。 */
     private String summarizeTaskPlan(String result, String fallback) {
         try {
             JsonNode root = objectMapper.readTree(result);
@@ -542,6 +588,7 @@ public class ToolActionEventService {
         return fallback;
     }
 
+    /** 汇总 publishArtifact 的结果，把不同 artifact 类型翻译成清晰的交付说明。 */
     private String summarizeArtifact(String result) {
         try {
             JsonNode root = objectMapper.readTree(result);
@@ -561,6 +608,7 @@ public class ToolActionEventService {
         return "工作台产物已发布";
     }
 
+    /** 汇总记忆读取结果，尽量提炼成数量信息。 */
     private String summarizeMemory(String result, String fallback) {
         if (result.contains("未找到") || result.toLowerCase().contains("not found")) {
             return "未找到匹配记忆";
@@ -572,6 +620,7 @@ public class ToolActionEventService {
         return fallback;
     }
 
+    /** 从文本结果里提取 `Total:` 总数。 */
     private Integer extractTotal(String text) {
         int totalIndex = text.lastIndexOf("Total:");
         if (totalIndex < 0) {
@@ -596,6 +645,7 @@ public class ToolActionEventService {
         }
     }
 
+    /** 统计结果文本里 `Result x` 的出现次数，粗略估算命中项数。 */
     private Integer countResultItems(String text) {
         int count = 0;
         int index = 0;
@@ -606,6 +656,7 @@ public class ToolActionEventService {
         return count > 0 ? count : null;
     }
 
+    /** 统计项目符号或编号行数，用来推断结果条目数量。 */
     private Integer countBullets(String text) {
         int count = 0;
         String[] lines = text.split("\\R");
@@ -618,14 +669,17 @@ public class ToolActionEventService {
         return count > 0 ? count : null;
     }
 
+    /** 安全转字符串。 */
     private String stringValue(Object value) {
         return value != null ? String.valueOf(value) : "";
     }
 
+    /** 为空时返回兜底值，避免展示字段掉空。 */
     private String fallback(String value, String fallback) {
         return value == null || value.isBlank() ? fallback : value;
     }
 
+    /** 截断过长文本，避免前端时间线一条动作撑得太长。 */
     private String truncate(String text, int maxChars) {
         if (text == null || text.length() <= maxChars) {
             return text;

@@ -3,7 +3,6 @@ package com.msz.resume.ai.tool.registry;
 import com.msz.resume.ai.integrations.openviking.core.config.OpenVikingProperties;
 import com.msz.resume.ai.tool.CoreTool;
 import com.msz.resume.ai.tool.config.ToolRegistrationConfig;
-import com.msz.resume.ai.tool.impl.AddTool;
 import com.msz.resume.ai.chat.tooling.ArtifactTool;
 import com.msz.resume.ai.chat.tooling.AskUserQuestionTool;
 import com.msz.resume.ai.tool.impl.GetCurrentTimeTool;
@@ -17,7 +16,6 @@ import com.msz.resume.ai.memory.tooling.RememberUserMemoryTool;
 import com.msz.resume.ai.memory.tooling.RememberUserPreferenceTool;
 import com.msz.resume.ai.resume.tooling.ResumeGuideTool;
 import com.msz.resume.ai.resume.tooling.ResumeOptimizeGuideTool;
-import com.msz.resume.ai.tool.impl.SayHelloTool;
 import com.msz.resume.ai.chat.tooling.SpawnAgentTool;
 import com.msz.resume.ai.chat.tooling.TaskPlanTool;
 import com.msz.resume.ai.tool.impl.ToolSearchTool;
@@ -275,8 +273,6 @@ class ToolRegistryTest {
                 new ToolSearchTool(registry),
                 new AskUserQuestionTool(),
                 new ArtifactTool(),
-                new SayHelloTool(),
-                new AddTool(),
                 new MindmapTool(),
                 new TaskPlanTool(),
                 new SpawnAgentTool(),

@@ -28,6 +28,20 @@ import java.util.List;
 import java.util.Map;
 
 @Slf4j
+/**
+ * Trace Stream 消费者。
+ *
+ * 作用：轮询 Redis Stream，把 timeline 事件消费出来后批量写入数据库，
+ * 同时处理 pending 重试、ack、死信转移和基础指标统计。
+ * 可以把它理解成“Trace 搬运工”，前面丢进流里，后面它负责稳稳搬到库里。
+ *
+ * 代码逻辑：
+ * 1. 定时 poll，确保 consumer group 可用
+ * 2. 优先处理超时 pending 消息，避免卡住
+ * 3. 拉取一批 Redis Stream 记录，转成 TraceStreamEvent
+ * 4. 投影成 TimelineActionRecord 后批量 upsert，再统一 ack
+ * 5. 超过重试上限的脏消息转死信流，方便后续排查
+ */
 @Component
 public class TraceStreamConsumer {
 
@@ -42,6 +56,7 @@ public class TraceStreamConsumer {
     private volatile boolean groupReady = false;
     private volatile long lastPendingRecoveryAt = 0L;
 
+    /** 创建 Trace Stream 消费者，负责把 Redis Stream 事件异步刷进数据库。 */
     public TraceStreamConsumer(StringRedisTemplate redisTemplate,
                                ObjectMapper objectMapper,
                                TraceStreamProperties properties,
@@ -57,6 +72,7 @@ public class TraceStreamConsumer {
     }
 
     @Scheduled(fixedDelayString = "${jarvis.trace.stream.poll-interval-ms:1000}")
+    /** 定时拉取 Redis Stream 并尝试消费落库。 */
     public void poll() {
         if (!properties.isEnabled() || !properties.isConsumerEnabled()) {
             return;
@@ -90,6 +106,7 @@ public class TraceStreamConsumer {
         }
     }
 
+    /** 消费一批 stream 记录，投影后批量入库并统一 ack。 */
     private void consume(List<MapRecord<String, String, String>> records) {
         long startedAt = System.nanoTime();
         List<TimelineActionRecord> timelineRecords = new ArrayList<>();
@@ -127,6 +144,7 @@ public class TraceStreamConsumer {
         }
     }
 
+    /** 到了重试窗口就扫描 pending 消息，必要时 claim 或打进死信。 */
     private void recoverPendingIfDue() {
         long now = System.currentTimeMillis();
         if (now - lastPendingRecoveryAt < Math.max(1L, properties.getPendingRetryMs())) {
@@ -182,6 +200,7 @@ public class TraceStreamConsumer {
         }
     }
 
+    /** 确保 Redis consumer group 已创建好，没有就尝试补建。 */
     private boolean ensureGroup() {
         if (groupReady) {
             return true;
@@ -197,7 +216,7 @@ public class TraceStreamConsumer {
                     properties.getStreamKey(), properties.getGroup());
             return true;
         } catch (DataAccessException e) {
-            String message = e.getMessage() != null ? e.getMessage() : "";
+            String message = exceptionMessages(e);
             if (message.contains("BUSYGROUP")) {
                 groupReady = true;
                 return true;
@@ -211,6 +230,20 @@ public class TraceStreamConsumer {
         }
     }
 
+    /** 把异常链里的 message 串起来，方便判断 BUSYGROUP / NOGROUP 这类场景。 */
+    private static String exceptionMessages(Throwable throwable) {
+        StringBuilder builder = new StringBuilder();
+        Throwable current = throwable;
+        while (current != null) {
+            if (current.getMessage() != null) {
+                builder.append(current.getMessage()).append('\n');
+            }
+            current = current.getCause();
+        }
+        return builder.toString();
+    }
+
+    /** 把 Redis Stream 原始记录还原成结构化 TraceStreamEvent。 */
     private TraceStreamEvent toEvent(MapRecord<String, String, String> record) throws Exception {
         Map<String, String> fields = record.getValue();
         Map<String, Object> payload = objectMapper.readValue(fields.getOrDefault("payloadJson", "{}"), PAYLOAD_TYPE);
@@ -230,6 +263,7 @@ public class TraceStreamConsumer {
         );
     }
 
+    /** 批量确认已经成功处理的 stream 记录。 */
     private void acknowledge(List<RecordId> ackIds) {
         if (ackIds == null || ackIds.isEmpty()) {
             return;
@@ -241,6 +275,7 @@ public class TraceStreamConsumer {
         );
     }
 
+    /** 判断一条 pending 消息是否已经闲置到可被重新 claim。 */
     private boolean isEligibleForClaim(PendingMessage pendingMessage) {
         return pendingMessage != null
                 && pendingMessage.getId() != null
@@ -248,11 +283,13 @@ public class TraceStreamConsumer {
                 && pendingMessage.getElapsedTimeSinceLastDelivery().toMillis() >= Math.max(1L, properties.getClaimIdleMs());
     }
 
+    /** 判断 pending 消息是否已经超过最大投递次数。 */
     private boolean isExceededRetryLimit(PendingMessage pendingMessage) {
         return pendingMessage != null
                 && pendingMessage.getTotalDeliveryCount() >= Math.max(1L, properties.getMaxDeliveryCount());
     }
 
+    /** 把超出重试上限的毒消息转存到死信流，避免一直堵塞消费。 */
     private boolean deadLetter(PendingMessage pendingMessage) {
         if (pendingMessage == null || pendingMessage.getId() == null) {
             return false;
@@ -296,6 +333,7 @@ public class TraceStreamConsumer {
         }
     }
 
+    /** 根据 streamId 回读原始记录，给死信补上更多上下文。 */
     private java.util.Optional<MapRecord<String, String, String>> readRecordById(RecordId recordId) {
         try {
             var records = redisTemplate.opsForStream().range(
@@ -316,12 +354,14 @@ public class TraceStreamConsumer {
     }
 
     @SuppressWarnings("unchecked")
+    /** 把 Redis claim 返回的泛型记录列表安全转回目标类型。 */
     private List<MapRecord<String, String, String>> castRecords(List<?> records) {
         return records.stream()
                 .map(record -> (MapRecord<String, String, String>) record)
                 .toList();
     }
 
+    /** 估算事件在流里滞留了多久，方便看消费延迟。 */
     private static long eventLagMs(TraceStreamEvent event) {
         if (event == null || event.createdAt() == null) {
             return 0L;
@@ -329,6 +369,7 @@ public class TraceStreamConsumer {
         return Math.max(0L, Duration.between(event.createdAt(), Instant.now()).toMillis());
     }
 
+    /** 把时间字符串解析成 Instant。 */
     private static Instant parseInstant(String value) {
         try {
             return value != null && !value.isBlank() ? Instant.parse(value) : Instant.now();
@@ -337,6 +378,7 @@ public class TraceStreamConsumer {
         }
     }
 
+    /** 把字符串安全解析成 long。 */
     private static long longValue(String value, long fallback) {
         try {
             return value != null && !value.isBlank() ? Long.parseLong(value) : fallback;

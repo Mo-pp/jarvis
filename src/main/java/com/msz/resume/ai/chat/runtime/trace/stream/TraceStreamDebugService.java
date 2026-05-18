@@ -12,6 +12,19 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * Trace Stream 调试服务。
+ *
+ * 作用：集中输出 Redis Trace Stream 的运行状态、最近事件、消费者积压和指标快照，
+ * 方便开发期或线上排障时快速看清链路健康度。
+ * 可以把它理解成“监控仪表盘后端”，把散落在 Redis 里的状态拼成一页可读信息。
+ *
+ * 代码逻辑：
+ * 1. 汇总配置、stream info、group info、consumer info、pending 概况
+ * 2. 读取消费者指标快照
+ * 3. 支持查看最近正常事件和最近死信事件
+ * 4. 所有 Redis 查询都做兜底，避免调试接口把主流程拖挂
+ */
 @Service
 public class TraceStreamDebugService {
 
@@ -19,6 +32,7 @@ public class TraceStreamDebugService {
     private final TraceStreamProperties properties;
     private final TraceStreamMetrics metrics;
 
+    /** 创建调试服务，统一查询 Trace Stream 的运行状态。 */
     public TraceStreamDebugService(StringRedisTemplate redisTemplate,
                                    TraceStreamProperties properties,
                                    TraceStreamMetrics metrics) {
@@ -27,6 +41,7 @@ public class TraceStreamDebugService {
         this.metrics = metrics;
     }
 
+    /** 返回当前 Trace Stream 的综合状态快照。 */
     public Map<String, Object> getStatus() {
         Map<String, Object> status = new LinkedHashMap<>();
         status.put("enabled", properties.isEnabled());
@@ -56,14 +71,17 @@ public class TraceStreamDebugService {
         return status;
     }
 
+    /** 查看最近的正常 Trace Stream 事件。 */
     public List<Map<String, Object>> recentEvents(int count) {
         return recentRecords(properties.getStreamKey(), count);
     }
 
+    /** 查看最近进入死信流的事件。 */
     public List<Map<String, Object>> recentDeadLetters(int count) {
         return recentRecords(properties.getDeadLetterStreamKey(), count);
     }
 
+    /** 查询某个 stream 的基础信息，比如长度和首尾消息。 */
     private Map<String, Object> streamInfo(String streamKey) {
         try {
             StreamInfo.XInfoStream info = redisTemplate.opsForStream().info(streamKey);
@@ -86,6 +104,7 @@ public class TraceStreamDebugService {
         }
     }
 
+    /** 查询指定消费组的组级状态。 */
     private List<Map<String, Object>> groupInfo(String streamKey, String group) {
         try {
             StreamInfo.XInfoGroups groups = redisTemplate.opsForStream().groups(streamKey);
@@ -107,6 +126,7 @@ public class TraceStreamDebugService {
         }
     }
 
+    /** 查询指定消费组下各个 consumer 的状态。 */
     private List<Map<String, Object>> consumerInfo(String streamKey, String group) {
         try {
             StreamInfo.XInfoConsumers consumers = redisTemplate.opsForStream().consumers(streamKey, group);
@@ -127,6 +147,7 @@ public class TraceStreamDebugService {
         }
     }
 
+    /** 汇总某个消费组当前 pending 消息概况。 */
     private Map<String, Object> pendingSummary(String streamKey, String group) {
         try {
             PendingMessagesSummary summary = redisTemplate.opsForStream().pending(streamKey, group);
@@ -149,6 +170,7 @@ public class TraceStreamDebugService {
         }
     }
 
+    /** 粗略估算消费组积压情况，帮助判断有没有明显堆积。 */
     private Map<String, Object> backlogEstimate(String streamKey, String group) {
         try {
             StreamInfo.XInfoStream stream = redisTemplate.opsForStream().info(streamKey);
@@ -178,6 +200,7 @@ public class TraceStreamDebugService {
         }
     }
 
+    /** 读取某个 stream 最近几条原始记录，便于直接排查字段内容。 */
     private List<Map<String, Object>> recentRecords(String streamKey, int count) {
         try {
             var records = redisTemplate.opsForStream().reverseRange(

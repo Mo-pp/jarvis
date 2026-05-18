@@ -22,17 +22,17 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * 普通工具执行策略（默认策略）
+ * 普通工具执行策略。
  *
- * <p>负责执行所有非特殊工具的调用，包括：
- * <ol>
- *   <li>从 ToolRegistry 获取工具执行器</li>
- *   <li>执行工具并捕获异常</li>
- *   <li>通过 HookEngine 执行 PostToolUse 回调</li>
- *   <li>收集工具结果并返回</li>
- * </ol>
+ * 作用：处理除 spawnAgent 等特殊工具外的常规工具调用，
+ * 并把开始、进度、成功、失败、artifact_ready、任务计划等事件同步打进 trace。
+ * 可以把它理解成“标准流水线”，绝大多数工具都按这套节奏执行和回传。
  *
- * <p>这是优先级最低的策略，作为所有工具的兜底处理。
+ * 代码逻辑：
+ * 1. 设置 ToolRuntimeContext，让工具执行时能拿到 session / agent / run 信息
+ * 2. 逐个执行工具，前后补发 trace 和 action 事件
+ * 3. 执行 PostToolUse Hook，并处理 toolSearch / createPlan / publishArtifact 这些特殊结果
+ * 4. 汇总工具结果、任务计划和发现的工具，返回给 ExecuteToolNode
  */
 @Slf4j
 @Component
@@ -45,6 +45,7 @@ public class NormalToolStrategy implements ToolExecutionStrategy {
     private final ArtifactActionEventService artifactActionEventService;
     private final AssistantCheckpointService assistantCheckpointService;
 
+    /** 注入普通工具执行、trace 事件和任务检查点所需依赖。 */
     public NormalToolStrategy(ToolRegistry toolRegistry,
                               HookEngine hookEngine,
                               TraceService traceService,
@@ -60,18 +61,21 @@ public class NormalToolStrategy implements ToolExecutionStrategy {
     }
 
     @Override
+    /** 作为兜底策略，默认认为任何工具都可以先接住。 */
     public boolean supports(ToolExecutionRequest request) {
         // 支持所有工具（作为兜底策略）
         return true;
     }
 
     @Override
+    /** 返回最低优先级，确保只有没有更专门策略时才走这里。 */
     public int getPriority() {
         // 最低优先级，作为默认策略
         return 1000;
     }
 
     @Override
+    /** 顺序执行一批普通工具，并把结果包装成下一轮 LLM 能继续理解的上下文。 */
     public ToolExecutionResult execute(ToolExecutionContext context) {
         QueryLoopState state = context.state();
         List<ToolExecutionRequest> requests = context.requests();
@@ -203,6 +207,7 @@ public class NormalToolStrategy implements ToolExecutionStrategy {
         return discovered;
     }
 
+    /** 判断 publishArtifact 的返回结果是不是一次真正成功的产物发布。 */
     private boolean isPublishedArtifact(String toolResult) {
         if (toolResult == null || toolResult.isBlank()) {
             return false;
@@ -219,6 +224,7 @@ public class NormalToolStrategy implements ToolExecutionStrategy {
         }
     }
 
+    /** 给部分常用工具补一条人能看懂的执行进度摘要。 */
     private String progressSummary(String toolName) {
         return switch (toolName) {
             case "openviking_tree" -> "正在遍历目录树，整理资源结构";

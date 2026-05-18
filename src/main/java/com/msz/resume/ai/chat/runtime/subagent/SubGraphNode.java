@@ -21,30 +21,17 @@ import java.util.*;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * 子Agent执行节点
+ * 子 Agent 子图执行器。
  *
- * <p>核心职责：接收父图的 spawnAgent 调用，创建独立的子状态机执行子任务，
- * 返回 SubAgentResult 给父图。
+ * 作用：承接 spawnAgent 派发出来的子任务，创建独立的 QueryLoopState 子图执行环境，
+ * 跑完后把摘要、状态和 token 用量打包回主 Agent。
+ * 可以把它理解成“分身工位”，主 Agent 把任务扔过来，这里单独开一套小循环做完再回报。
  *
- * <h2>设计原则</h2>
- * <ul>
- *   <li><b>复用现有节点</b>：不创建新的 Node 类，通过 QueryLoopState 的 IS_SUB_AGENT 等标志
- *       让 CallLlmNode/ExecuteToolNode 走不同分支</li>
- *   <li><b>共享缓存</b>：子Agent复用父级完整静态前缀，确保 prefix cache 命中</li>
- *   <li><b>上下文隔离</b>：子图有独立的 MESSAGE_HISTORY 列表，内部消息不泄露给父图</li>
- *   <li><b>阻塞递归</b>：子Agent不允许调用 spawnAgent/askUserQuestion/askMultipleQuestions</li>
- * </ul>
- *
- * <h2>执行流程</h2>
- * <pre>
- * SubGraphNode.execute(task, sessionId, agentType, tools, maxTurns, userContext)
- *   1. 构造子Agent的初始 QueryLoopState（IS_SUB_AGENT=true, SUB_AGENT_TYPE, MAX_TURNS, SUB_AGENT_TASK）
- *   2. 注入任务描述作为 UserMessage
- *   3. 编译并流式执行内层图（复用 queryLoopGraph Bean）
- *   4. 提取最终 AI 消息作为摘要
- *   5. 收集 token 用量
- *   6. 返回 SubAgentResult
- * </pre>
+ * 代码逻辑：
+ * 1. 根据父图传入的任务、工具白名单和 trace 信息组装子 Agent 初始状态
+ * 2. 复用现有 queryLoopGraph 编译出子图，并设置更贴合子任务的递归上限
+ * 3. 让子图独立执行，不把内部 message history 泄露回父图
+ * 4. 从最终状态提取摘要、轮次和 token 用量，封装成 SubAgentResult 返回
  */
 @Slf4j
 @Component
@@ -58,6 +45,7 @@ public class SubGraphNode {
      * @Lazy 打破循环依赖：queryLoopGraph → executeToolNode → subGraphNode → queryLoopGraph
      * SubGraphNode 仅在 execute() 运行时才需要编译图，构造时不需要，因此延迟注入是安全的。
      */
+    /** 延迟注入内层图定义，避免和 ExecuteToolNode 形成循环依赖。 */
     public SubGraphNode(@Lazy StateGraph<QueryLoopState> queryLoopGraph) {
         this.queryLoopGraph = queryLoopGraph;
     }
@@ -213,6 +201,7 @@ public class SubGraphNode {
         return null;
     }
 
+    /** 按子 Agent 最大轮次推导一个更保守的递归上限。 */
     private int subAgentRecursionLimit(int maxTurns) {
         if (maxTurns <= 0) {
             return 100;

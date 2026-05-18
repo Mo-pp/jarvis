@@ -10,7 +10,11 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Publishes sparse user-visible checkpoints in the chat timeline.
+ * 助手阶段性检查点事件服务。
+ *
+ * 作用：在关键节点给用户发一些稀疏但有价值的“进度感”提示，
+ * 比如开始处理、调整策略、拆分任务完成。
+ * 它不是把每个细节都抖出来，而是像项目经理报进度，只在值得用户知道的时候说一句。
  */
 @Service
 public class AssistantCheckpointService {
@@ -24,10 +28,12 @@ public class AssistantCheckpointService {
 
     private final TimelineActionService timelineActionService;
 
+    /** 注入时间线动作工厂，用于统一构造和发布 checkpoint 卡片。 */
     public AssistantCheckpointService(TimelineActionService timelineActionService) {
         this.timelineActionService = timelineActionService;
     }
 
+    /** 在工具计划刚形成时发一个轻量检查点，告诉用户这轮准备怎么推进。 */
     public void toolPlan(ChatRunTraceContext traceContext,
                          TraceAgentDescriptor agentDescriptor,
                          List<ChatMessage> existingMessages,
@@ -59,6 +65,7 @@ public class AssistantCheckpointService {
         publish(traceContext, payload);
     }
 
+    /** 在任务计划创建完成后发一条提示，让用户知道工作已经被拆成可执行步骤。 */
     public void taskPlanCreated(ChatRunTraceContext traceContext,
                                 TraceAgentDescriptor agentDescriptor,
                                 int taskCount) {
@@ -76,6 +83,7 @@ public class AssistantCheckpointService {
         publish(traceContext, payload);
     }
 
+    /** 判断当前这批工具请求值不值得发 checkpoint，避免每轮都吵用户。 */
     private boolean shouldPublish(ChatRunTraceContext traceContext, List<ToolExecutionRequest> requests) {
         return traceContext != null
                 && traceContext.isActive()
@@ -83,6 +91,7 @@ public class AssistantCheckpointService {
                 && !requests.isEmpty();
     }
 
+    /** 生成 checkpoint ID，按 runId + agent + turn 维度唯一标识一次提示。 */
     private String checkpointId(ChatRunTraceContext traceContext,
                                 TraceAgentDescriptor agentDescriptor,
                                 int turnCount,
@@ -94,6 +103,7 @@ public class AssistantCheckpointService {
                 + (strategyShift ? "_strategy" : "_start");
     }
 
+    /** 给第一步工具计划生成一句人话摘要，像告诉用户“我先从哪儿下手”。 */
     private String firstStepContent(ToolExecutionRequest first, int requestCount) {
         String suffix = requestCount > 1 ? "，并行拿几组信号。" : "。";
         return switch (first.name()) {
@@ -109,6 +119,7 @@ public class AssistantCheckpointService {
         };
     }
 
+    /** 当上一步结果不够时，生成“我要换打法”的说明，像切换侦查路线。 */
     private String strategyShiftContent(ToolExecutionRequest first) {
         if (SEARCH_TOOLS.contains(first.name())) {
             return "上一步结果还不够，我换用检索方式继续定位。";
@@ -120,6 +131,7 @@ public class AssistantCheckpointService {
         };
     }
 
+    /** 检查最近几条工具结果是否明显“没捞到东西”，用于决定要不要提示策略调整。 */
     private boolean hasRecentInsufficientToolResult(List<ChatMessage> messages) {
         if (messages == null || messages.isEmpty()) {
             return false;
@@ -143,6 +155,7 @@ public class AssistantCheckpointService {
         return false;
     }
 
+    /** 判断工具结果是否属于空结果或错误结果。 */
     private boolean isInsufficient(String text) {
         if (text == null || text.isBlank()) {
             return true;
@@ -156,6 +169,7 @@ public class AssistantCheckpointService {
                 || normalized.contains("未找到");
     }
 
+    /** 通过时间线服务发布 checkpoint，统一走 `assistant_checkpoint` 事件。 */
     private void publish(ChatRunTraceContext traceContext, Map<String, Object> payload) {
         timelineActionService.publish(traceContext, "assistant_checkpoint", payload, "AssistantCheckpointService");
     }

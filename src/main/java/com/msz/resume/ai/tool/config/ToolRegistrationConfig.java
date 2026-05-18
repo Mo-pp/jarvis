@@ -1,6 +1,5 @@
 package com.msz.resume.ai.tool.config;
 
-import com.msz.resume.ai.tool.impl.AddTool;
 import com.msz.resume.ai.chat.tooling.ArtifactTool;
 import com.msz.resume.ai.chat.tooling.AskUserQuestionTool;
 import com.msz.resume.ai.chat.tooling.SpawnAgentTool;
@@ -15,7 +14,6 @@ import com.msz.resume.ai.memory.tooling.RememberUserMemoryTool;
 import com.msz.resume.ai.memory.tooling.RememberUserPreferenceTool;
 import com.msz.resume.ai.resume.tooling.ResumeGuideTool;
 import com.msz.resume.ai.resume.tooling.ResumeOptimizeGuideTool;
-import com.msz.resume.ai.tool.impl.SayHelloTool;
 import com.msz.resume.ai.chat.tooling.TaskPlanTool;
 import com.msz.resume.ai.tool.impl.ToolSearchTool;
 import com.msz.resume.ai.tool.registry.ToolRegistry;
@@ -39,8 +37,6 @@ public class ToolRegistrationConfig {
     private final ToolSearchTool toolSearchTool;
     private final AskUserQuestionTool askUserQuestionTool;
     private final ArtifactTool artifactTool;
-    private final SayHelloTool sayHelloTool;
-    private final AddTool addTool;
     private final MindmapTool mindmapTool;
     private final TaskPlanTool taskPlanTool;
     private final SpawnAgentTool spawnAgentTool;
@@ -66,10 +62,6 @@ public class ToolRegistrationConfig {
         toolRegistry.registerToolsFromObject(toolSearchTool);
         toolRegistry.registerToolsFromObject(askUserQuestionTool);
         toolRegistry.registerToolsFromObject(artifactTool);
-
-        // 注册延迟工具（无 @CoreTool）
-        toolRegistry.registerToolsFromObject(sayHelloTool);
-        toolRegistry.registerToolsFromObject(addTool);
 
         // 注册思维导图工具（延迟工具）
         toolRegistry.registerToolsFromObject(mindmapTool);

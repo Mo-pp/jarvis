@@ -4435,11 +4435,15 @@ body.workbench-resizing {
 }
 
 .knowledge-base-resource-empty {
-  color: rgba(15, 23, 42, 0.76);
+  color: rgba(15, 23, 42, 0.98) !important;
 }
 
 .knowledge-base-resource-empty p {
-  color: rgba(15, 23, 42, 0.88);
+  color: rgba(15, 23, 42, 0.98) !important;
+}
+
+.knowledge-base-resource-empty svg {
+  color: rgba(15, 23, 42, 0.92) !important;
 }
 
 .skills-upload-placeholder {

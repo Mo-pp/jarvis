@@ -50,32 +50,18 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * 调用大模型的节点：把当前的消息发给大模型，拿到大模型的回复
+ * LLM 调用节点。
  *
- * 业务背景：
- * Query Loop 的核心节点之一，负责与 LLM 进行交互。
- * 每轮循环都会调用此节点，将消息发给 LLM 并获取回复。
+ * 作用：负责把当前 QueryLoopState 里的上下文、提示词、工具规格组装成一次 LLM 请求，
+ * 并把回复重新写回状态，还顺手把 recall、tool plan、缓存和 trace 一起记上。
+ * 可以把它理解成“主脑发问器”，每轮真正去问模型、拿回下一步意图的就是它。
  *
- * 使用场景：
- * 在状态机的 inner loop 中，作为思考-行动循环的核心环节：
- * UserInput -> CallLlmNode -> ExecuteToolNode -> CallLlmNode -> ...
- *
- * 调用链：
- * QueryLoopGraphConfig -> CallLlmNode -> SystemPromptBuilder -> ToolPromptCollector
- *                                              |
- *                                        PromptConfigLoader
- *
- * 核心职责：
- * - 构建系统提示词（通过 SystemPromptBuilder）
- * - 组装消息列表（系统消息 + 用户消息 + 历史消息）
- * - 调用 LLM API 获取回复
- * - 记录输出 token 数（供后续 token 预算管理使用）
- *
- * 输出示例（日志）：
- * [CallLlmNode] ===== 发送给LLM的消息列表（共3条）=====
- * [CallLlmNode]   [0] type=SYSTEM, content=你是一个智能助手...
- * [CallLlmNode]   [1] type=USER, content=帮我查询天气
- * [CallLlmNode] ===== 消息列表结束 =====
+ * 代码逻辑：
+ * 1. 先跑消息预处理和压缩，必要时补入 OpenViking session context
+ * 2. 记录自动召回 trace，并根据主 Agent / 子 Agent 模式选择不同提示词和工具集
+ * 3. 调 LLM，同步或流式拿回回复
+ * 4. 如果回复里带工具计划，就提前发 assistant checkpoint 和 trace tool plan
+ * 5. 把 token、cache、trace 元数据重新塞回 QueryLoopState，供后续节点继续使用
  *
  * @see SystemPromptBuilder
  * @see ToolRegistry
@@ -119,6 +105,7 @@ public class CallLlmNode implements AsyncNodeAction<QueryLoopState> {
     private final AssistantCheckpointService assistantCheckpointService;
 
 
+    /** 注入 LLM 调用、提示词构建、召回和 trace 记录所需依赖。 */
     public CallLlmNode(ChatModel chatModel,
                        Optional<StreamingChatModel> streamingChatModel,
                        ToolRegistry toolRegistry,
@@ -426,6 +413,7 @@ public class CallLlmNode implements AsyncNodeAction<QueryLoopState> {
         return result.systemPrompt();
     }
 
+    /** 在流式和非流式模型之间做统一适配，并尽量把 token delta 推给前端。 */
     private ChatResponse chat(ChatRequest request, String sessionId) {
         if (!ChatStreamContext.isActive(sessionId) || streamingChatModel.isEmpty()) {
             return chatModel.chat(request);
@@ -500,6 +488,7 @@ public class CallLlmNode implements AsyncNodeAction<QueryLoopState> {
      *
      * <p>将 OpenViking Session Context 包装为参考信息，帮助 LLM 理解上下文。
      */
+    /** 把 OpenViking session context 包成一段“可直接喂给 LLM 的参考消息”。 */
     private String formatSessionContextMessage(String sessionContext) {
         StringBuilder sb = new StringBuilder();
         sb.append("[会话上下文参考]\n");

@@ -6,10 +6,20 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * Normalizes raw SSE event payloads into durable frontend timeline actions.
+ * Timeline Action 载荷投影器。
+ *
+ * 作用：把 SSE 原始事件 payload 规整成前端时间线和后端落库都能复用的统一 action 结构。
+ * 可以把它理解成“翻译层”，上游各种事件说法不一，到这里都被翻成统一方言。
+ *
+ * 代码逻辑：
+ * 1. 先判断事件是否属于 timeline 关心的类型
+ * 2. 对 ask_user_question / pending 这类特殊事件补齐标准字段
+ * 3. 统一补上 kind、eventType、sequence、id、是否可持久化等元信息
+ * 4. 给下游 recorder / Redis stream / DB projector 提供稳定输入
  */
 public class TimelineActionPayloadProjector {
 
+    /** 把原始 SSE 事件投影成标准 timeline action；不属于时间线的事件会被忽略。 */
     public Optional<Map<String, Object>> project(String eventType, long sequence, Map<String, Object> payload) {
         if (!isTimelineEvent(eventType) || payload == null) {
             return Optional.empty();
@@ -33,12 +43,14 @@ public class TimelineActionPayloadProjector {
         return Optional.of(action);
     }
 
+    /** 判断这个 action 是否适合落库，敏感或显式不可持久化的内容会被过滤。 */
     public boolean isPersistable(Map<String, Object> action) {
         return action != null
                 && booleanValue(action.getOrDefault(TimelineActionService.FIELD_PERSISTABLE, true))
                 && !booleanValue(action.getOrDefault(TimelineActionService.FIELD_SENSITIVE, false));
     }
 
+    /** 判断某类 SSE 事件是否属于前端时间线要消费的事件。 */
     public static boolean isTimelineEvent(String eventType) {
         return "assistant_checkpoint".equals(eventType)
                 || "tool_use_started".equals(eventType)
@@ -53,6 +65,7 @@ public class TimelineActionPayloadProjector {
                 || "pending".equals(eventType);
     }
 
+    /** 把底层事件类型映射成前端更容易消费的动作大类。 */
     public static String kindFor(String eventType) {
         return switch (eventType) {
             case "assistant_checkpoint" -> "checkpoint";
@@ -63,6 +76,7 @@ public class TimelineActionPayloadProjector {
         };
     }
 
+    /** 规范化特殊事件载荷，尤其是等待用户回答这类 pending 场景。 */
     private static Map<String, Object> normalizePayload(String eventType, long sequence, Map<String, Object> payload) {
         if (!"ask_user_question".equals(eventType) && !"pending".equals(eventType)) {
             return payload;
@@ -94,6 +108,7 @@ public class TimelineActionPayloadProjector {
         return action;
     }
 
+    /** 统计问题数量，保证前端至少拿到一个合理的计数。 */
     private static int questionCount(Object questions) {
         if (questions instanceof List<?> list) {
             return Math.max(1, list.size());
@@ -101,6 +116,7 @@ public class TimelineActionPayloadProjector {
         return 1;
     }
 
+    /** 给待回答问题生成简短摘要，方便列表态直接展示。 */
     private static String questionSummary(Object questions, int questionCount) {
         if (questionCount > 1) {
             return questionCount + " 个问题待回答";
@@ -121,6 +137,7 @@ public class TimelineActionPayloadProjector {
         return "等待你的回答";
     }
 
+    /** 把各种类型的布尔值安全收口成 boolean。 */
     private static boolean booleanValue(Object value) {
         if (value instanceof Boolean bool) {
             return bool;
@@ -128,10 +145,12 @@ public class TimelineActionPayloadProjector {
         return value != null && Boolean.parseBoolean(String.valueOf(value));
     }
 
+    /** 安全读取字符串值，避免空指针到处传。 */
     private static String stringValue(Object value) {
         return value != null ? String.valueOf(value) : "";
     }
 
+    /** 从一串候选值里挑第一个非空字符串。 */
     private static String firstNonBlank(String... values) {
         if (values == null) {
             return "";

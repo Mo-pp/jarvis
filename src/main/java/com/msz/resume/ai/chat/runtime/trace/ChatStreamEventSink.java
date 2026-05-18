@@ -13,9 +13,17 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * 负责向前端发送结构化 SSE 对话事件。
+ * SSE 对话事件发送器。
  *
- * 封装 SseEmitter，提供类型安全的事件发送方法。
+ * 作用：把后端内部事件统一封装成结构化的 SSE 数据包发给前端，
+ * 同时顺手记录时间线动作和发送序号。
+ * 可以把它理解成“前端事件出站口”，所有流式事件都要先从这里过一遍。
+ *
+ * 代码逻辑：
+ * 1. 持有 SseEmitter、ObjectMapper、sessionId 和时间线记录器
+ * 2. 每次发送时生成统一的 sequence 和 timestamp
+ * 3. 将事件序列化为 ChatStreamEvent 后发往前端
+ * 4. 发送失败时关闭连接状态，避免后续继续硬发
  */
 @Slf4j
 public class ChatStreamEventSink {
@@ -27,10 +35,12 @@ public class ChatStreamEventSink {
     private final AtomicLong sequence = new AtomicLong(0);
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
+    /** 创建默认版本的事件出口，不额外记录 timeline 动作。 */
     public ChatStreamEventSink(SseEmitter emitter, ObjectMapper objectMapper, String sessionId) {
         this(emitter, objectMapper, sessionId, TimelineActionRecorder.noop());
     }
 
+    /** 创建完整版本的事件出口，同时接入时间线动作记录器。 */
     public ChatStreamEventSink(SseEmitter emitter,
                                ObjectMapper objectMapper,
                                String sessionId,
@@ -44,7 +54,7 @@ public class ChatStreamEventSink {
         this.emitter.onError(error -> closed.set(true));
     }
 
-    /** 发送结构化 SSE 事件 */
+    /** 发送一个结构化 SSE 事件，并给它补上统一的 sequence、timestamp 和 replay 数据。 */
     public synchronized void send(String type, Map<String, Object> payload) throws IOException {
         if (closed.get()) {
             return;
@@ -96,7 +106,7 @@ public class ChatStreamEventSink {
         }
     }
 
-    /** 发送错误事件 */
+    /** 发送统一格式的错误事件，前端可以据此直接展示错误状态。 */
     public void error(String code, String message) {
         try {
             send("error", Map.of(
@@ -109,29 +119,31 @@ public class ChatStreamEventSink {
         }
     }
 
-    /** 正常完成 SSE 连接 */
+    /** 正常结束 SSE 连接，相当于告诉前端“这轮流式输出已经播完了”。 */
     public void complete() {
         if (closed.compareAndSet(false, true)) {
             emitter.complete();
         }
     }
 
-    /** 以错误结束 SSE 连接 */
+    /** 以错误方式结束 SSE 连接，让上层知道这次是异常收尾。 */
     public void completeWithError(Throwable error) {
         if (closed.compareAndSet(false, true)) {
             emitter.completeWithError(error);
         }
     }
 
-    /** 检查 SSE 连接是否已关闭 */
+    /** 返回连接是否已关闭，给上游决定还要不要继续发事件。 */
     public boolean isClosed() {
         return closed.get();
     }
 
+    /** 从 payload 里安全取一个字段，只做日志拼装，不参与业务判断。 */
     private static Object value(Map<String, Object> payload, String key) {
         return payload != null ? payload.get(key) : null;
     }
 
+    /** 判断事件是不是高频事件，高频事件走 debug 日志，避免日志刷屏。 */
     private static boolean isHighFrequencyEvent(String type) {
         return "message_delta".equals(type);
     }

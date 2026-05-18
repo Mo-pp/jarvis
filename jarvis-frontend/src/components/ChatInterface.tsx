@@ -4017,7 +4017,7 @@ export function ChatInterface() {
                   <p>加载资源目录...</p>
                 </div>
               ) : resourceError ? (
-                <div className="skills-existing-empty">
+                <div className="skills-existing-empty knowledge-base-resource-empty">
                   <X size={18} />
                   <p>{resourceError}</p>
                 </div>
@@ -4900,7 +4900,7 @@ export function ChatInterface() {
                             <p>加载资源目录...</p>
                           </div>
                         ) : resourceError ? (
-                          <div className="skills-existing-empty">
+                          <div className="skills-existing-empty knowledge-base-resource-empty">
                             <X size={18} />
                             <p>{resourceError}</p>
                           </div>
